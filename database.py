@@ -42,6 +42,11 @@ async def init_db() -> None:
                 description TEXT,
                 created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            );
             """
         )
 
@@ -130,3 +135,22 @@ async def delete_event(event_id: int) -> bool:
     async with _pool.acquire() as conn:
         result = await conn.execute("DELETE FROM events WHERE id = $1", event_id)
         return result.endswith("1")
+
+
+# --- settings (key/value: menu file_id, etc.) ---
+async def get_setting(key: str) -> str | None:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT value FROM settings WHERE key = $1", key)
+        return row["value"] if row else None
+
+
+async def set_setting(key: str, value: str) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO settings (key, value)
+            VALUES ($1, $2)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+            """,
+            key, value,
+        )
