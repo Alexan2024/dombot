@@ -1,4 +1,4 @@
-"""PostgreSQL access layer (asyncpg). Tables are created on startup."""
+"""PostgreSQL access layer (asyncpg). Tables are created / migrated on startup."""
 import asyncpg
 
 from config import DATABASE_URL
@@ -7,7 +7,7 @@ _pool: asyncpg.Pool | None = None
 
 
 async def init_db() -> None:
-    """Create the connection pool and ensure tables exist."""
+    """Create the connection pool, ensure tables exist, run light migrations."""
     global _pool
     _pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=5)
     async with _pool.acquire() as conn:
@@ -47,8 +47,66 @@ async def init_db() -> None:
                 key   TEXT PRIMARY KEY,
                 value TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS faq (
+                id          SERIAL PRIMARY KEY,
+                position    INTEGER NOT NULL DEFAULT 0,
+                question_ru TEXT NOT NULL,
+                question_en TEXT NOT NULL,
+                answer_ru   TEXT NOT NULL,
+                answer_en   TEXT NOT NULL,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+
+            CREATE TABLE IF NOT EXISTS activity (
+                id         BIGSERIAL PRIMARY KEY,
+                tg_id      BIGINT NOT NULL,
+                kind       TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
             """
         )
+
+        # --- light migrations for existing deployments ---
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS blocked BOOLEAN NOT NULL DEFAULT FALSE;"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_activity_tg_created ON activity (tg_id, created_at);"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_activity_created ON activity (created_at);"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bookings_created ON bookings (created_at);"
+        )
+
+        # --- seed a starter FAQ once (keeps parity with the old hardcoded list) ---
+        count = await conn.fetchval("SELECT COUNT(*) FROM faq")
+        if count == 0:
+            await conn.executemany(
+                """
+                INSERT INTO faq (position, question_ru, question_en, answer_ru, answer_en)
+                VALUES ($1, $2, $3, $4, $5);
+                """,
+                [
+                    (1, "Парковка", "Parking",
+                     "🅿️ Информация о парковке — отредактируйте в панели администратора.",
+                     "🅿️ Parking info — please edit this in the admin panel."),
+                    (2, "Детское меню", "Kids' menu",
+                     "🧒 Информация о детском меню — отредактируйте в панели администратора.",
+                     "🧒 Kids' menu info — please edit this in the admin panel."),
+                    (3, "Можно ли с животными", "Pets allowed?",
+                     "🐾 Информация о животных — отредактируйте в панели администратора.",
+                     "🐾 Pets info — please edit this in the admin panel."),
+                    (4, "Дресс-код", "Dress code",
+                     "👔 Информация о дресс-коде — отредактируйте в панели администратора.",
+                     "👔 Dress code info — please edit this in the admin panel."),
+                    (5, "Терраса", "Terrace",
+                     "🌿 Информация о террасе — отредактируйте в панели администратора.",
+                     "🌿 Terrace info — please edit this in the admin panel."),
+                ],
+            )
 
 
 async def close_db() -> None:
@@ -66,7 +124,8 @@ async def upsert_user(tg_id: int, lang: str, username: str | None, full_name: st
             ON CONFLICT (tg_id) DO UPDATE
               SET lang = EXCLUDED.lang,
                   username = EXCLUDED.username,
-                  full_name = EXCLUDED.full_name;
+                  full_name = EXCLUDED.full_name,
+                  blocked = FALSE;
             """,
             tg_id, lang, username, full_name,
         )
@@ -76,6 +135,25 @@ async def get_user_lang(tg_id: int) -> str | None:
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("SELECT lang FROM users WHERE tg_id = $1", tg_id)
         return row["lang"] if row else None
+
+
+async def set_user_blocked(tg_id: int, blocked: bool = True) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET blocked = $2 WHERE tg_id = $1", tg_id, blocked
+        )
+
+
+async def list_user_ids(lang: str | None = None) -> list[int]:
+    """Non-blocked user ids, optionally filtered by language."""
+    async with _pool.acquire() as conn:
+        if lang in ("ru", "en"):
+            rows = await conn.fetch(
+                "SELECT tg_id FROM users WHERE blocked = FALSE AND lang = $1", lang
+            )
+        else:
+            rows = await conn.fetch("SELECT tg_id FROM users WHERE blocked = FALSE")
+        return [r["tg_id"] for r in rows]
 
 
 # --- bookings ---
@@ -120,6 +198,11 @@ async def add_event(event_date, title: str, description: str | None) -> int:
         return row["id"]
 
 
+async def get_event(event_id: int) -> asyncpg.Record | None:
+    async with _pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM events WHERE id = $1", event_id)
+
+
 async def list_upcoming_events() -> list[asyncpg.Record]:
     async with _pool.acquire() as conn:
         return await conn.fetch(
@@ -131,13 +214,77 @@ async def list_upcoming_events() -> list[asyncpg.Record]:
         )
 
 
+async def count_upcoming_events() -> int:
+    async with _pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM events WHERE event_date >= CURRENT_DATE"
+        )
+
+
+_EVENT_COLS = {"event_date", "title", "description"}
+
+
+async def update_event_field(event_id: int, field: str, value) -> None:
+    if field not in _EVENT_COLS:
+        raise ValueError(f"illegal event field: {field}")
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE events SET {field} = $2 WHERE id = $1", event_id, value
+        )
+
+
 async def delete_event(event_id: int) -> bool:
     async with _pool.acquire() as conn:
         result = await conn.execute("DELETE FROM events WHERE id = $1", event_id)
         return result.endswith("1")
 
 
-# --- settings (key/value: menu file_id, etc.) ---
+# --- faq ---
+async def list_faq() -> list[asyncpg.Record]:
+    async with _pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM faq ORDER BY position ASC, id ASC")
+
+
+async def get_faq(faq_id: int) -> asyncpg.Record | None:
+    async with _pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM faq WHERE id = $1", faq_id)
+
+
+async def add_faq(question_ru: str, question_en: str, answer_ru: str, answer_en: str) -> int:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO faq (position, question_ru, question_en, answer_ru, answer_en)
+            VALUES (
+                (SELECT COALESCE(MAX(position), 0) + 1 FROM faq),
+                $1, $2, $3, $4
+            )
+            RETURNING id;
+            """,
+            question_ru, question_en, answer_ru, answer_en,
+        )
+        return row["id"]
+
+
+_FAQ_COLS = {"question_ru", "question_en", "answer_ru", "answer_en"}
+
+
+async def update_faq_field(faq_id: int, field: str, value: str) -> None:
+    if field not in _FAQ_COLS:
+        raise ValueError(f"illegal faq field: {field}")
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE faq SET {field} = $2 WHERE id = $1", faq_id, value
+        )
+
+
+async def delete_faq(faq_id: int) -> bool:
+    async with _pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM faq WHERE id = $1", faq_id)
+        return result.endswith("1")
+
+
+# --- settings (key/value: menu file_id, editable contacts, toggles, ...) ---
 async def get_setting(key: str) -> str | None:
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("SELECT value FROM settings WHERE key = $1", key)
@@ -154,3 +301,149 @@ async def set_setting(key: str, value: str) -> None:
             """,
             key, value,
         )
+
+
+# --- activity log (used by statistics) ---
+async def log_activity(tg_id: int, kind: str) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO activity (tg_id, kind) VALUES ($1, $2)", tg_id, kind
+        )
+
+
+# --- statistics ---
+async def get_user_stats() -> dict:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*)                                                        AS total,
+                COUNT(*) FILTER (WHERE created_at >= now() - interval '1 day')  AS new_1d,
+                COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')  AS new_7d,
+                COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days') AS new_30d,
+                COUNT(*) FILTER (WHERE lang = 'ru')                             AS ru,
+                COUNT(*) FILTER (WHERE lang = 'en')                             AS en,
+                COUNT(*) FILTER (WHERE blocked)                                 AS blocked
+            FROM users;
+            """
+        )
+        return dict(row)
+
+
+async def get_active_users() -> dict:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(DISTINCT tg_id) FILTER (WHERE created_at >= now() - interval '1 day')  AS active_1d,
+                COUNT(DISTINCT tg_id) FILTER (WHERE created_at >= now() - interval '7 days')  AS active_7d,
+                COUNT(DISTINCT tg_id) FILTER (WHERE created_at >= now() - interval '30 days') AS active_30d
+            FROM activity;
+            """
+        )
+        return dict(row)
+
+
+async def get_booking_stats() -> dict:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*)                                             AS total,
+                COUNT(*) FILTER (WHERE status = 'pending')           AS pending,
+                COUNT(*) FILTER (WHERE status = 'confirmed')         AS confirmed,
+                COUNT(*) FILTER (WHERE status = 'declined')          AS declined,
+                COUNT(*) FILTER (WHERE status = 'reschedule_offered') AS reschedule_offered,
+                COUNT(*) FILTER (WHERE status = 'cancelled')         AS cancelled,
+                COUNT(*) FILTER (WHERE created_at >= now() - interval '1 day')  AS d1,
+                COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')  AS d7,
+                COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days') AS d30
+            FROM bookings;
+            """
+        )
+        return dict(row)
+
+
+async def top_booking_times(limit: int = 5) -> list[asyncpg.Record]:
+    async with _pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT b_time AS v, COUNT(*) AS c
+            FROM bookings
+            GROUP BY b_time
+            ORDER BY c DESC, v ASC
+            LIMIT $1;
+            """,
+            limit,
+        )
+
+
+async def top_booking_dates(limit: int = 5) -> list[asyncpg.Record]:
+    async with _pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT b_date AS v, COUNT(*) AS c
+            FROM bookings
+            GROUP BY b_date
+            ORDER BY c DESC, v ASC
+            LIMIT $1;
+            """,
+            limit,
+        )
+
+
+async def get_activity_stats() -> dict:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*)                                     AS total,
+                COUNT(*) FILTER (WHERE kind = 'message')     AS messages,
+                COUNT(*) FILTER (WHERE kind = 'callback')    AS callbacks,
+                COUNT(*) FILTER (WHERE created_at >= now() - interval '1 day')  AS d1,
+                COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')  AS d7
+            FROM activity;
+            """
+        )
+        return dict(row)
+
+
+async def get_session_stats(gap_minutes: int = 15) -> dict:
+    """Group each user's activity into sessions (split on gaps > gap_minutes)
+    and return session count, total and average duration in seconds."""
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            WITH ordered AS (
+                SELECT tg_id, created_at,
+                       LAG(created_at) OVER (PARTITION BY tg_id ORDER BY created_at) AS prev
+                FROM activity
+            ),
+            marked AS (
+                SELECT tg_id, created_at,
+                       CASE WHEN prev IS NULL
+                                 OR created_at - prev > make_interval(mins => $1)
+                            THEN 1 ELSE 0 END AS new_session
+                FROM ordered
+            ),
+            sessioned AS (
+                SELECT tg_id, created_at,
+                       SUM(new_session) OVER (PARTITION BY tg_id ORDER BY created_at
+                                              ROWS UNBOUNDED PRECEDING) AS sess
+                FROM marked
+            ),
+            sessions AS (
+                SELECT tg_id, sess,
+                       EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at))) AS dur
+                FROM sessioned
+                GROUP BY tg_id, sess
+            )
+            SELECT
+                COUNT(*)                     AS session_count,
+                COALESCE(SUM(dur), 0)        AS total_seconds,
+                COALESCE(AVG(dur), 0)        AS avg_seconds
+            FROM sessions;
+            """,
+            gap_minutes,
+        )
+        return dict(row)
