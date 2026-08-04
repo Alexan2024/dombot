@@ -12,6 +12,9 @@ from texts import T, t
 
 router = Router()
 
+# settings key under which the menu PDF file_id is stored (see handlers/admin.py)
+MENU_FILE_KEY = "menu_file_id"
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
@@ -40,22 +43,35 @@ def _is_label(text: str, key: str) -> bool:
     return text in (T["ru"][key], T["en"][key])
 
 
-@router.message(F.text.func(lambda x: x and _is_label(x, "btn_language")))
+@router.message(
+    F.chat.type == "private",
+    F.text.func(lambda x: x and _is_label(x, "btn_language")),
+)
 async def open_language(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(t("ru", "choose_language"), reply_markup=language_kb())
 
 
-@router.message(F.text.func(lambda x: x and _is_label(x, "btn_menu")))
+@router.message(
+    F.chat.type == "private",
+    F.text.func(lambda x: x and _is_label(x, "btn_menu")),
+)
 async def show_menu(message: Message) -> None:
     lang = await get_lang(message.from_user.id)
-    if config.MENU_LINK:
+    file_id = await db.get_setting(MENU_FILE_KEY)
+    if file_id:
+        await message.answer_document(file_id, caption=t(lang, "menu_text"))
+    elif config.MENU_LINK:
+        # backwards-compatible fallback if a link is still configured
         await message.answer(f'{t(lang, "menu_text")}\n{config.MENU_LINK}')
     else:
         await message.answer(t(lang, "menu_no_link"))
 
 
-@router.message(F.text.func(lambda x: x and _is_label(x, "btn_hours")))
+@router.message(
+    F.chat.type == "private",
+    F.text.func(lambda x: x and _is_label(x, "btn_hours")),
+)
 async def show_hours(message: Message) -> None:
     lang = await get_lang(message.from_user.id)
     await message.answer(
