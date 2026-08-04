@@ -25,7 +25,11 @@ T = {
         "btn_faq": "❓ Вопросы",
         "btn_language": "🌐 Язык / Language",
         # --- booking flow ---
-        "ask_date": "На какую дату хотите забронировать стол?",
+        "ask_date": (
+            "На какую дату хотите забронировать стол?\n\n"
+            "Нажмите «Сегодня» или «Завтра», либо напишите свою дату "
+            "в формате ДД.ММ.ГГГГ."
+        ),
         "btn_today": "Сегодня",
         "btn_tomorrow": "Завтра",
         "ask_time": "На какое время?",
@@ -50,6 +54,7 @@ T = {
             "👤 Имя: <b>{name}</b>\n"
             "📱 Телефон: <b>{phone}</b>\n"
             "💬 Пожелания: {requests}\n\n"
+            "⏱ Обратите внимание: стол резервируется на 2,5 часа.\n\n"
             "Отправляем заявку?"
         ),
         "requests_none": "—",
@@ -65,6 +70,7 @@ T = {
         "client_confirmed": (
             "✅ Ваша бронь подтверждена!\n\n"
             "📅 <b>{date}</b> в <b>{time}</b>, {guests} гост(я/ей)\n"
+            "⏱ Столик зарезервирован на 2,5 часа.\n"
             f"Ждём вас в <b>{RESTAURANT_NAME}</b>. Если планы изменятся — просто "
             "напишите нам."
         ),
@@ -138,7 +144,11 @@ T = {
         "btn_hours": "📍 Hours & location",
         "btn_faq": "❓ FAQ",
         "btn_language": "🌐 Язык / Language",
-        "ask_date": "What date would you like to book?",
+        "ask_date": (
+            "What date would you like to book?\n\n"
+            "Tap \"Today\" or \"Tomorrow\", or type your own date "
+            "as DD.MM.YYYY."
+        ),
         "btn_today": "Today",
         "btn_tomorrow": "Tomorrow",
         "ask_time": "What time?",
@@ -161,6 +171,7 @@ T = {
             "👤 Name: <b>{name}</b>\n"
             "📱 Phone: <b>{phone}</b>\n"
             "💬 Requests: {requests}\n\n"
+            "⏱ Please note: the table is reserved for 2.5 hours.\n\n"
             "Send the request?"
         ),
         "requests_none": "—",
@@ -175,6 +186,7 @@ T = {
         "client_confirmed": (
             "✅ Your reservation is confirmed!\n\n"
             "📅 <b>{date}</b> at <b>{time}</b>, {guests} guest(s)\n"
+            "⏱ The table is reserved for 2.5 hours.\n"
             f"We look forward to seeing you at <b>{RESTAURANT_NAME}</b>. "
             "If your plans change, just let us know."
         ),
