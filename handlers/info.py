@@ -21,7 +21,10 @@ def _label(text: str, key: str) -> bool:
     return text in (T["ru"][key], T["en"][key])
 
 
-@router.message(F.text.func(lambda x: x and _label(x, "btn_faq")))
+@router.message(
+    F.chat.type == "private",
+    F.text.func(lambda x: x and _label(x, "btn_faq")),
+)
 async def show_faq(message: Message) -> None:
     lang = await get_lang(message.from_user.id)
     await message.answer(t(lang, "faq_header"), reply_markup=faq_kb(lang))
@@ -47,7 +50,9 @@ async def faq_answer(callback: CallbackQuery) -> None:
 
 
 # --- fallback for anything not handled above ---
-@router.message(F.text)
+# Restricted to PRIVATE chats so the bot never replies to normal chatter
+# in the managers' group.
+@router.message(F.chat.type == "private", F.text)
 async def fallback(message: Message) -> None:
     lang = await get_lang(message.from_user.id)
     await message.answer(t(lang, "unknown"), reply_markup=main_menu_kb(lang))
