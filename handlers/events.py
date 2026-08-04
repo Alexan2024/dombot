@@ -39,7 +39,10 @@ def _parse_date(text: str):
 
 
 # ---------- public view ----------
-@router.message(F.text.func(lambda x: x and _label(x, "btn_events")))
+@router.message(
+    F.chat.type == "private",
+    F.text.func(lambda x: x and _label(x, "btn_events")),
+)
 async def show_events(message: Message) -> None:
     lang = await get_lang(message.from_user.id)
     events = await db.list_upcoming_events()
