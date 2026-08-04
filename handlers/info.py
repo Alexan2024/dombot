@@ -1,24 +1,31 @@
-"""FAQ menu and a fallback for unrecognized input. Included LAST."""
+"""FAQ menu (now database-driven, editable from the admin panel) and a
+fallback for unrecognized input. Included LAST."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
-from handlers.common import get_lang
+import database as db
+from handlers.common import esc, get_lang
 from keyboards import faq_back_kb, faq_kb, main_menu_kb
 from texts import T, t
 
 router = Router()
 
-_FAQ_ANSWERS = {
-    "parking": "faq_a_parking",
-    "kids": "faq_a_kids",
-    "pets": "faq_a_pets",
-    "dresscode": "faq_a_dresscode",
-    "terrace": "faq_a_terrace",
-}
-
 
 def _label(text: str, key: str) -> bool:
     return text in (T["ru"][key], T["en"][key])
+
+
+def _question(item, lang: str) -> str:
+    return item["question_ru"] if lang == "ru" else item["question_en"]
+
+
+def _answer(item, lang: str) -> str:
+    return item["answer_ru"] if lang == "ru" else item["answer_en"]
+
+
+async def _faq_pairs(lang: str):
+    items = await db.list_faq()
+    return items, [(e["id"], _question(e, lang)) for e in items]
 
 
 @router.message(
@@ -27,25 +34,35 @@ def _label(text: str, key: str) -> bool:
 )
 async def show_faq(message: Message) -> None:
     lang = await get_lang(message.from_user.id)
-    await message.answer(t(lang, "faq_header"), reply_markup=faq_kb(lang))
+    items, pairs = await _faq_pairs(lang)
+    if not items:
+        await message.answer(t(lang, "faq_empty"))
+        return
+    await message.answer(t(lang, "faq_header"), reply_markup=faq_kb(lang, pairs))
 
 
 @router.callback_query(F.data == "faq:menu")
 async def faq_menu(callback: CallbackQuery) -> None:
     lang = await get_lang(callback.from_user.id)
-    await callback.message.edit_text(t(lang, "faq_header"), reply_markup=faq_kb(lang))
+    items, pairs = await _faq_pairs(lang)
+    if not items:
+        await callback.message.edit_text(t(lang, "faq_empty"))
+        await callback.answer()
+        return
+    await callback.message.edit_text(t(lang, "faq_header"), reply_markup=faq_kb(lang, pairs))
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("faq:"))
-async def faq_answer(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("faq:item:"))
+async def faq_item(callback: CallbackQuery) -> None:
     lang = await get_lang(callback.from_user.id)
-    key = callback.data.split(":", 1)[1]
-    answer_key = _FAQ_ANSWERS.get(key)
-    if not answer_key:
+    faq_id = int(callback.data.split(":")[2])
+    item = await db.get_faq(faq_id)
+    if not item:
         await callback.answer()
         return
-    await callback.message.edit_text(t(lang, answer_key), reply_markup=faq_back_kb(lang))
+    text = f"<b>{esc(_question(item, lang))}</b>\n\n{esc(_answer(item, lang))}"
+    await callback.message.edit_text(text, reply_markup=faq_back_kb(lang))
     await callback.answer()
 
 

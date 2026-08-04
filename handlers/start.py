@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, Message
 
 import config
 import database as db
-from handlers.common import get_lang, set_lang_cache
+from handlers.common import get_content, get_lang, set_lang_cache
 from keyboards import language_kb, main_menu_kb
 from texts import T, t
 
@@ -77,10 +77,10 @@ async def show_hours(message: Message) -> None:
     await message.answer(
         t(
             lang, "hours_text",
-            address=config.ADDRESS,
-            working_hours=config.WORKING_HOURS,
-            phone=config.PHONE,
-            map_link=config.MAP_LINK,
+            address=await get_content("info_address", config.ADDRESS),
+            working_hours=await get_content("info_hours", config.WORKING_HOURS),
+            phone=await get_content("info_phone", config.PHONE),
+            map_link=await get_content("info_map_link", config.MAP_LINK),
         ),
         disable_web_page_preview=True,
     )

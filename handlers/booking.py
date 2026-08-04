@@ -13,7 +13,7 @@ from aiogram.types import (
 
 import config
 import database as db
-from handlers.common import esc, get_lang
+from handlers.common import esc, get_lang, is_bookings_enabled
 from keyboards import (
     confirm_kb,
     date_kb,
@@ -63,12 +63,21 @@ async def _begin(message: Message, state: FSMContext, lang: str) -> None:
 )
 async def start_booking(message: Message, state: FSMContext) -> None:
     lang = await get_lang(message.from_user.id)
+    if not await is_bookings_enabled():
+        await message.answer(t(lang, "bookings_closed"), reply_markup=main_menu_kb(lang))
+        return
     await _begin(message, state, lang)
 
 
 @router.callback_query(F.data == "go:book")
 async def start_booking_cb(callback: CallbackQuery, state: FSMContext) -> None:
     lang = await get_lang(callback.from_user.id)
+    if not await is_bookings_enabled():
+        await callback.message.answer(
+            t(lang, "bookings_closed"), reply_markup=main_menu_kb(lang)
+        )
+        await callback.answer()
+        return
     await _begin(callback.message, state, lang)
     await callback.answer()
 
