@@ -57,7 +57,10 @@ async def _begin(message: Message, state: FSMContext, lang: str) -> None:
 
 
 # --- entry points ---
-@router.message(F.text.func(lambda x: x and _label(x, "btn_book")))
+@router.message(
+    F.chat.type == "private",
+    F.text.func(lambda x: x and _label(x, "btn_book")),
+)
 async def start_booking(message: Message, state: FSMContext) -> None:
     lang = await get_lang(message.from_user.id)
     await _begin(message, state, lang)
