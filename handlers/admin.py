@@ -1,14 +1,16 @@
 """Admin control panel (buttons instead of remembering commands).
 
 - /admin  -> inline panel: events, FAQ editor, menu (PDF), contacts/hours,
-             booking-intake toggle, broadcast, statistics.
+             booking-intake toggle + its "closed" message, broadcast, statistics.
 - Events:  reuses the AddEvent FSM (events.py, lazy-imported to avoid an import
            cycle) and the evt:del: / evt:edit: callbacks from events.py.
 - Menu:    admin uploads a PDF once; its Telegram file_id is stored in `settings`
            and re-sent to guests who tap the "Menu" button.
 - FAQ:     add / edit / delete bilingual questions (stored in the `faq` table).
 - Contacts/hours: editable values stored in `settings` (fallback to config).
-- Toggle:  booking intake on/off (settings key 'bookings_enabled').
+- Toggle:  booking intake on/off (settings key 'bookings_enabled'), plus an
+           editable RU/EN message shown to guests while intake is off
+           (settings keys 'msg_bookings_closed_ru' / '..._en', fallback texts.py).
 
 Broadcast (bc:*) and statistics (stats:*) live in their own routers.
 Admin UI is Russian-only, matching the rest of the manager-facing side.
@@ -26,7 +28,15 @@ from aiogram.types import (
 
 import config
 import database as db
-from handlers.common import esc, get_content, is_admin, is_bookings_enabled
+from handlers.common import (
+    BOOKINGS_CLOSED_KEYS,
+    default_bookings_closed,
+    esc,
+    get_bookings_closed_text,
+    get_content,
+    is_admin,
+    is_bookings_enabled,
+)
 
 router = Router()
 
@@ -48,6 +58,9 @@ def _panel_kb(bookings_enabled: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📎 Обновить меню (PDF)", callback_data="adm:menu")],
         [InlineKeyboardButton(text="📍 Контакты и часы", callback_data="adm:contacts")],
         [InlineKeyboardButton(text=toggle_text, callback_data="adm:toggle")],
+        [InlineKeyboardButton(
+            text="✉️ Текст при закрытых бронях", callback_data="adm:closedmsg"
+        )],
         [InlineKeyboardButton(text="📣 Рассылка", callback_data="bc:start")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats:open")],
     ])
@@ -90,6 +103,101 @@ async def adm_toggle(callback: CallbackQuery) -> None:
     await callback.answer(
         "Приём броней включён ✅" if new_state else "Приём броней выключен ⛔"
     )
+
+
+# ---------- message shown while booking intake is off ----------
+class EditClosedMsg(StatesGroup):
+    waiting_value = State()
+
+
+_CLOSED_LANG_LABEL = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
+
+
+async def _closedmsg_view():
+    lines = [
+        "✉️ <b>Сообщение при закрытом приёме броней</b>",
+        "",
+        "Гость видит этот текст, когда приём броней выключен.",
+        "",
+    ]
+    rows = []
+    for lang in ("ru", "en"):
+        value = await get_bookings_closed_text(lang)
+        lines.append(f"<b>{_CLOSED_LANG_LABEL[lang]}:</b>\n{esc(value)}\n")
+        rows.append([InlineKeyboardButton(
+            text=f"✏️ {_CLOSED_LANG_LABEL[lang]}",
+            callback_data=f"adm:closedmsg:{lang}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="↩️ Вернуть тексты по умолчанию", callback_data="adm:closedmsg:reset"
+    )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm:panel")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "adm:closedmsg")
+async def adm_closedmsg(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    text, kb = await _closedmsg_view()
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:closedmsg:reset")
+async def adm_closedmsg_reset(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    await state.clear()
+    for lang, key in BOOKINGS_CLOSED_KEYS.items():
+        await db.set_setting(key, default_bookings_closed(lang))
+    await callback.answer("Тексты возвращены к исходным")
+    text, kb = await _closedmsg_view()
+    await callback.message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("adm:closedmsg:"))
+async def adm_closedmsg_pick(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    lang = callback.data.split(":")[2]
+    if lang not in BOOKINGS_CLOSED_KEYS:
+        await callback.answer()
+        return
+    current = await get_bookings_closed_text(lang)
+    await state.set_state(EditClosedMsg.waiting_value)
+    await state.update_data(closed_lang=lang)
+    await callback.message.answer(
+        f"Текущий текст — {_CLOSED_LANG_LABEL[lang]}:\n{esc(current)}\n\n"
+        "Пришлите новый текст одним сообщением. "
+        "Форматирование (жирный, курсив, ссылки) сохранится.\n"
+        "Для отмены — /cancel."
+    )
+    await callback.answer()
+
+
+@router.message(EditClosedMsg.waiting_value, Command("cancel"))
+async def closedmsg_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Отменено. Текст не изменился.")
+
+
+@router.message(EditClosedMsg.waiting_value, F.text)
+async def closedmsg_save(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    lang = data.get("closed_lang")
+    if lang not in BOOKINGS_CLOSED_KEYS:
+        await state.clear()
+        return
+    # html_text keeps the admin's Telegram formatting (bot sends with parse_mode=HTML)
+    await db.set_setting(BOOKINGS_CLOSED_KEYS[lang], message.html_text.strip())
+    await state.clear()
+    await message.answer(f"✅ Текст обновлён — {_CLOSED_LANG_LABEL[lang]}.")
+    text, kb = await _closedmsg_view()
+    await message.answer(text, reply_markup=kb)
 
 
 # ---------- events: view / add / edit / delete ----------
