@@ -105,14 +105,13 @@ def events_book_kb(lang: str) -> InlineKeyboardMarkup:
     ]])
 
 
-def faq_kb(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t(lang, "faq_parking"), callback_data="faq:parking")],
-        [InlineKeyboardButton(text=t(lang, "faq_kids"), callback_data="faq:kids")],
-        [InlineKeyboardButton(text=t(lang, "faq_pets"), callback_data="faq:pets")],
-        [InlineKeyboardButton(text=t(lang, "faq_dresscode"), callback_data="faq:dresscode")],
-        [InlineKeyboardButton(text=t(lang, "faq_terrace"), callback_data="faq:terrace")],
-    ])
+def faq_kb(lang: str, items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """Build the public FAQ menu from (faq_id, question) pairs."""
+    rows = [
+        [InlineKeyboardButton(text=question, callback_data=f"faq:item:{faq_id}")]
+        for faq_id, question in items
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def faq_back_kb(lang: str) -> InlineKeyboardMarkup:
