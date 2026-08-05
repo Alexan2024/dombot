@@ -13,7 +13,12 @@ from aiogram.types import (
 
 import config
 import database as db
-from handlers.common import esc, get_lang, is_bookings_enabled
+from handlers.common import (
+    esc,
+    get_bookings_closed_text,
+    get_lang,
+    is_bookings_enabled,
+)
 from keyboards import (
     confirm_kb,
     date_kb,
@@ -64,7 +69,9 @@ async def _begin(message: Message, state: FSMContext, lang: str) -> None:
 async def start_booking(message: Message, state: FSMContext) -> None:
     lang = await get_lang(message.from_user.id)
     if not await is_bookings_enabled():
-        await message.answer(t(lang, "bookings_closed"), reply_markup=main_menu_kb(lang))
+        await message.answer(
+            await get_bookings_closed_text(lang), reply_markup=main_menu_kb(lang)
+        )
         return
     await _begin(message, state, lang)
 
@@ -74,7 +81,7 @@ async def start_booking_cb(callback: CallbackQuery, state: FSMContext) -> None:
     lang = await get_lang(callback.from_user.id)
     if not await is_bookings_enabled():
         await callback.message.answer(
-            t(lang, "bookings_closed"), reply_markup=main_menu_kb(lang)
+            await get_bookings_closed_text(lang), reply_markup=main_menu_kb(lang)
         )
         await callback.answer()
         return
