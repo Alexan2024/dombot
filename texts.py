@@ -42,7 +42,7 @@ T = {
         ),
         "btn_share_contact": "📱 Поделиться контактом",
         "ask_requests": (
-            "Есть особые пожелания? (столик у окна, повод, детский стул, аллергии)\n"
+            "Есть особые пожелания?\n"
             "Если нет — нажмите «Пропустить»."
         ),
         "btn_skip": "Пропустить",
@@ -165,7 +165,7 @@ T = {
         "ask_phone": "Please share a phone number in case we need to reach you.",
         "btn_share_contact": "📱 Share contact",
         "ask_requests": (
-            "Any special requests? (window table, occasion, high chair, allergies)\n"
+            "Any special requests?\n"
             'If none, tap "Skip".'
         ),
         "btn_skip": "Skip",
