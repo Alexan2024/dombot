@@ -66,6 +66,10 @@ T = {
             "к вам в ближайшее время. ⏳"
         ),
         "cancelled": "Заявка отменена. Будем рады помочь, когда будете готовы.",
+        "bookings_closed": (
+            "🙁 Извините, приём броней временно приостановлен. "
+            "Пожалуйста, свяжитесь с нами по телефону или загляните немного позже."
+        ),
         # --- manager replies to client ---
         "client_confirmed": (
             "✅ Ваша бронь подтверждена!\n\n"
@@ -112,14 +116,20 @@ T = {
         ),
         # --- faq ---
         "faq_header": "Выберите вопрос:",
+        "faq_empty": "Вопросы скоро появятся здесь.",
+        "faq_back": "⬅️ К вопросам",
+        # (legacy FAQ label/answer keys kept for backwards compatibility; the live
+        #  FAQ is now stored in the database and editable from the admin panel.)
         "faq_parking": "Парковка",
         "faq_kids": "Детское меню",
         "faq_pets": "Можно ли с животными",
-        "faq_back": "⬅️ К вопросам",
-        # FAQ answers — placeholders, fill in later
+        "faq_dresscode": "Дресс-код",
+        "faq_terrace": "Терраса",
         "faq_a_parking": "🅿️ (текст про парковку — заполнить)",
         "faq_a_kids": "🧒 (текст про детское меню — заполнить)",
         "faq_a_pets": "🐾 (текст про животных — заполнить)",
+        "faq_a_dresscode": "👗 (текст про дресс-код — заполнить)",
+        "faq_a_terrace": "🌿 (текст про террасу — заполнить)",
         # --- misc ---
         "back_to_menu": "⬅️ В меню",
         "unknown": "Не совсем понял. Выберите пункт в меню ниже 👇",
@@ -179,6 +189,10 @@ T = {
             "availability and get back to you shortly. ⏳"
         ),
         "cancelled": "Request cancelled. We'll be happy to help whenever you're ready.",
+        "bookings_closed": (
+            "🙁 Sorry, we're not taking bookings at the moment. "
+            "Please call us or check back a little later."
+        ),
         "client_confirmed": (
             "✅ Your reservation is confirmed!\n\n"
             "📅 <b>{date}</b> at <b>{time}</b>, {guests} guest(s)\n"
@@ -220,13 +234,18 @@ T = {
             '<a href="{map_link}">Get directions</a>'
         ),
         "faq_header": "Choose a question:",
+        "faq_empty": "FAQ will appear here soon.",
+        "faq_back": "⬅️ Back to questions",
         "faq_parking": "Parking",
         "faq_kids": "Kids' menu",
         "faq_pets": "Pets allowed?",
-        "faq_back": "⬅️ Back to questions",
+        "faq_dresscode": "Dress code",
+        "faq_terrace": "Terrace",
         "faq_a_parking": "🅿️ (parking info — to be filled in)",
         "faq_a_kids": "🧒 (kids' menu info — to be filled in)",
         "faq_a_pets": "🐾 (pets info — to be filled in)",
+        "faq_a_dresscode": "👗 (dress code info — to be filled in)",
+        "faq_a_terrace": "🌿 (terrace info — to be filled in)",
         "back_to_menu": "⬅️ Menu",
         "unknown": "I didn't quite get that. Please pick an option below 👇",
     },
