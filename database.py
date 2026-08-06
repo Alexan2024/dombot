@@ -64,6 +64,24 @@ async def init_db() -> None:
                 kind       TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
+
+            -- dates on which booking is switched off (optional custom message)
+            CREATE TABLE IF NOT EXISTS blocked_dates (
+                day        DATE PRIMARY KEY,
+                message_ru TEXT,
+                message_en TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+
+            -- bookable time window per weekday (0 = Monday ... 6 = Sunday),
+            -- stored as minutes from midnight; close_min may be <= open_min
+            -- for windows that cross midnight (e.g. 12:00-00:00).
+            CREATE TABLE IF NOT EXISTS booking_hours (
+                weekday   SMALLINT PRIMARY KEY,
+                is_open   BOOLEAN  NOT NULL DEFAULT TRUE,
+                open_min  SMALLINT NOT NULL DEFAULT 720,
+                close_min SMALLINT NOT NULL DEFAULT 1380
+            );
             """
         )
 
@@ -106,6 +124,17 @@ async def init_db() -> None:
                      "🌿 Информация о террасе — отредактируйте в панели администратора.",
                      "🌿 Terrace info — please edit this in the admin panel."),
                 ],
+            )
+
+        # --- seed the weekly booking window once (12:00-23:00 every day) ---
+        hours_count = await conn.fetchval("SELECT COUNT(*) FROM booking_hours")
+        if hours_count == 0:
+            await conn.executemany(
+                """
+                INSERT INTO booking_hours (weekday, is_open, open_min, close_min)
+                VALUES ($1, TRUE, 720, 1380);
+                """,
+                [(d,) for d in range(7)],
             )
 
 
@@ -282,6 +311,77 @@ async def delete_faq(faq_id: int) -> bool:
     async with _pool.acquire() as conn:
         result = await conn.execute("DELETE FROM faq WHERE id = $1", faq_id)
         return result.endswith("1")
+
+
+# --- blocked dates (booking switched off for a specific day) ---
+async def list_blocked_dates(upcoming_only: bool = True) -> list[asyncpg.Record]:
+    async with _pool.acquire() as conn:
+        if upcoming_only:
+            return await conn.fetch(
+                "SELECT * FROM blocked_dates WHERE day >= CURRENT_DATE ORDER BY day ASC"
+            )
+        return await conn.fetch("SELECT * FROM blocked_dates ORDER BY day ASC")
+
+
+async def get_blocked_date(day) -> asyncpg.Record | None:
+    async with _pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM blocked_dates WHERE day = $1", day)
+
+
+async def add_blocked_date(day, message_ru: str | None, message_en: str | None) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO blocked_dates (day, message_ru, message_en)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (day) DO UPDATE
+              SET message_ru = EXCLUDED.message_ru,
+                  message_en = EXCLUDED.message_en;
+            """,
+            day, message_ru, message_en,
+        )
+
+
+async def delete_blocked_date(day) -> bool:
+    async with _pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM blocked_dates WHERE day = $1", day)
+        return result.endswith("1")
+
+
+async def purge_past_blocked_dates() -> None:
+    """Housekeeping: drop days that are already in the past."""
+    async with _pool.acquire() as conn:
+        await conn.execute("DELETE FROM blocked_dates WHERE day < CURRENT_DATE")
+
+
+# --- booking hours (per weekday, minutes from midnight) ---
+async def list_booking_hours() -> list[asyncpg.Record]:
+    async with _pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM booking_hours ORDER BY weekday ASC")
+
+
+async def get_booking_hours(weekday: int) -> asyncpg.Record | None:
+    async with _pool.acquire() as conn:
+        return await conn.fetchrow(
+            "SELECT * FROM booking_hours WHERE weekday = $1", weekday
+        )
+
+
+async def set_booking_hours(
+    weekday: int, is_open: bool, open_min: int, close_min: int
+) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO booking_hours (weekday, is_open, open_min, close_min)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (weekday) DO UPDATE
+              SET is_open   = EXCLUDED.is_open,
+                  open_min  = EXCLUDED.open_min,
+                  close_min = EXCLUDED.close_min;
+            """,
+            weekday, is_open, open_min, close_min,
+        )
 
 
 # --- settings (key/value: menu file_id, editable contacts, toggles, ...) ---

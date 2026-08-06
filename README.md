@@ -51,7 +51,24 @@ cp .env.example .env        # fill in the values, incl. a local DATABASE_URL
 python bot.py
 ```
 
-## 4. Managing events
+## 4. Booking availability
+
+All of this lives under `/admin`:
+
+- **📅 Закрытые даты** — switch booking off for a specific day. Optionally give
+  that date its own RU/EN message; otherwise guests see the general
+  "date closed" text, which is editable in the same section.
+- **🕐 Часы бронирования** — a bookable window per weekday
+  (`12:00-23:00`, or `12:00-01:00` for a window crossing midnight), or mark the
+  day as **выходной**. Guests get time-slot buttons built from that window and
+  can still type a time; anything outside the window is rejected with an
+  editable message.
+- **🔕 Приём броней** — the global kill switch, unchanged.
+
+Defaults on first start: 12:00–23:00 every day. Check the panel right after
+deploying and adjust.
+
+## 5. Managing events
 
 In the managers' chat (or private chat with the bot), an admin sends:
 
@@ -60,7 +77,7 @@ In the managers' chat (or private chat with the bot), an admin sends:
 
 Guests see them under the **🎭 Афиша / Events** button.
 
-## 5. Filling in content
+## 6. Filling in content
 
 - Restaurant address / hours / phone / map / menu link → Railway **Variables**
   (or edit defaults in `config.py`).

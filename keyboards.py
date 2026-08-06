@@ -41,6 +41,16 @@ def date_kb(lang: str) -> ReplyKeyboardMarkup:
     )
 
 
+def time_kb(lang: str, slots: list[str]) -> ReplyKeyboardMarkup:
+    """Bookable time slots, four per row. The guest may also type a time."""
+    rows = [
+        [KeyboardButton(text=slot) for slot in slots[i:i + 4]]
+        for i in range(0, len(slots), 4)
+    ]
+    rows.append([KeyboardButton(text=t(lang, "btn_cancel"))])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def guests_kb(lang: str) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text=str(n)) for n in (1, 2, 3, 4)],

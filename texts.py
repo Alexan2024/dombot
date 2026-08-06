@@ -32,7 +32,30 @@ T = {
         ),
         "btn_today": "Сегодня",
         "btn_tomorrow": "Завтра",
-        "ask_time": "На какое время?",
+        "ask_time": (
+            "На какое время?\n\n"
+            "Выберите время из списка ниже или напишите своё в формате ЧЧ:ММ.\n"
+            "Мы принимаем брони с {from} до {to}."
+        ),
+        # --- date / time validation ---
+        "date_bad": (
+            "Не получилось распознать дату. Напишите её в формате ДД.ММ.ГГГГ — "
+            "например, 15.08.2026."
+        ),
+        "date_past": "Эта дата уже прошла. Пожалуйста, выберите другую.",
+        "time_bad": (
+            "Не получилось распознать время. Напишите его в формате ЧЧ:ММ — "
+            "например, 19:30."
+        ),
+        # --- unavailability (editable in the admin panel) ---
+        "date_closed": (
+            "К сожалению, на {date} бронирование недоступно. "
+            "Пожалуйста, выберите другую дату."
+        ),
+        "time_closed": (
+            "К сожалению, на это время бронь недоступна. "
+            "Мы принимаем брони с {from} до {to} — пожалуйста, выберите другое время."
+        ),
         "ask_guests": "Сколько будет гостей?",
         "btn_guests_more": "Больше 8",
         "ask_guests_number": "Напишите число гостей:",
@@ -157,7 +180,28 @@ T = {
         ),
         "btn_today": "Today",
         "btn_tomorrow": "Tomorrow",
-        "ask_time": "What time?",
+        "ask_time": (
+            "What time?\n\n"
+            "Pick a time below or type your own as HH:MM.\n"
+            "We take bookings from {from} to {to}."
+        ),
+        "date_bad": (
+            "I couldn't read that date. Please type it as DD.MM.YYYY — "
+            "for example, 15.08.2026."
+        ),
+        "date_past": "That date has already passed. Please choose another one.",
+        "time_bad": (
+            "I couldn't read that time. Please type it as HH:MM — "
+            "for example, 19:30."
+        ),
+        "date_closed": (
+            "Unfortunately we're not taking bookings for {date}. "
+            "Please choose another date."
+        ),
+        "time_closed": (
+            "Unfortunately that time isn't available. "
+            "We take bookings from {from} to {to} — please pick another time."
+        ),
         "ask_guests": "How many guests?",
         "btn_guests_more": "More than 8",
         "ask_guests_number": "Please type the number of guests:",
