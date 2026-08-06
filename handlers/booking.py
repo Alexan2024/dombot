@@ -14,10 +14,20 @@ from aiogram.types import (
 import config
 import database as db
 from handlers.common import (
+    check_date,
+    day_window,
     esc,
+    fill,
+    fmt_date,
+    fmt_time,
     get_bookings_closed_text,
     get_lang,
+    get_message,
     is_bookings_enabled,
+    parse_date,
+    parse_time,
+    time_in_window,
+    time_slots,
 )
 from keyboards import (
     confirm_kb,
@@ -27,6 +37,7 @@ from keyboards import (
     manager_kb,
     phone_kb,
     requests_kb,
+    time_kb,
 )
 from texts import T, t
 
@@ -118,26 +129,98 @@ async def cancel_booking(message: Message, state: FSMContext) -> None:
 
 
 # --- step 1: date ---
+async def _ask_time(message: Message, state: FSMContext, lang: str,
+                    open_min: int, close_min: int) -> None:
+    """Move on to the time step, offering the slots allowed on the chosen day."""
+    slots = time_slots(open_min, close_min)
+    prompt = fill(
+        t(lang, "ask_time"),
+        **{"from": fmt_time(open_min), "to": fmt_time(close_min)},
+    )
+    await state.set_state(Booking.time)
+    await message.answer(prompt, reply_markup=time_kb(lang, slots))
+
+
 @router.message(Booking.date, F.text)
 async def step_date(message: Message, state: FSMContext) -> None:
     lang = (await state.get_data()).get("lang", "ru")
     text = message.text.strip()
+
     if _label(text, "btn_today"):
-        chosen = date.today().strftime("%d.%m.%Y")
+        chosen = date.today()
     elif _label(text, "btn_tomorrow"):
-        chosen = (date.today() + timedelta(days=1)).strftime("%d.%m.%Y")
+        chosen = date.today() + timedelta(days=1)
     else:
-        chosen = text
-    await state.update_data(date=chosen)
-    await state.set_state(Booking.time)
-    await message.answer(t(lang, "ask_time"), reply_markup=_cancel_kb(lang))
+        chosen = parse_date(text)
+        if chosen is None:
+            await message.answer(t(lang, "date_bad"), reply_markup=date_kb(lang))
+            return
+
+    if chosen < date.today():
+        await message.answer(t(lang, "date_past"), reply_markup=date_kb(lang))
+        return
+
+    available, custom = await check_date(chosen, lang)
+    if not available:
+        text_out = custom or await get_message("date_closed", lang)
+        await message.answer(
+            fill(text_out, date=fmt_date(chosen)), reply_markup=date_kb(lang)
+        )
+        return
+
+    window = await day_window(chosen)
+    if window is None:  # defensive: check_date already covers this
+        await message.answer(
+            fill(await get_message("date_closed", lang), date=fmt_date(chosen)),
+            reply_markup=date_kb(lang),
+        )
+        return
+
+    open_min, close_min = window
+    await state.update_data(
+        date=fmt_date(chosen),
+        date_iso=chosen.isoformat(),
+        open_min=open_min,
+        close_min=close_min,
+    )
+    await _ask_time(message, state, lang, open_min, close_min)
 
 
 # --- step 2: time ---
 @router.message(Booking.time, F.text)
 async def step_time(message: Message, state: FSMContext) -> None:
-    lang = (await state.get_data()).get("lang", "ru")
-    await state.update_data(time=message.text.strip())
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    open_min = data.get("open_min")
+    close_min = data.get("close_min")
+
+    # no window in state (e.g. an FSM left over from an older version) —
+    # accept the value as typed rather than dead-ending the guest
+    if open_min is None or close_min is None:
+        await state.update_data(time=message.text.strip())
+        await state.set_state(Booking.guests)
+        await message.answer(t(lang, "ask_guests"), reply_markup=guests_kb(lang))
+        return
+
+    minutes = parse_time(message.text)
+    if minutes is None:
+        await message.answer(
+            t(lang, "time_bad"),
+            reply_markup=time_kb(lang, time_slots(open_min, close_min)),
+        )
+        return
+
+    if not time_in_window(minutes, open_min, close_min):
+        await message.answer(
+            fill(
+                await get_message("time_closed", lang),
+                **{"from": fmt_time(open_min), "to": fmt_time(close_min)},
+            ),
+            reply_markup=time_kb(lang, time_slots(open_min, close_min)),
+        )
+        return
+
+    await state.update_data(time=fmt_time(minutes))
     await state.set_state(Booking.guests)
     await message.answer(t(lang, "ask_guests"), reply_markup=guests_kb(lang))
 
