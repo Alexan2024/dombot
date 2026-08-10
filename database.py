@@ -5,6 +5,10 @@ from config import DATABASE_URL
 
 _pool: asyncpg.Pool | None = None
 
+# default bookable window seeded on a brand-new database: 12:00-23:00 daily
+_DEFAULT_OPEN_MIN = 720
+_DEFAULT_CLOSE_MIN = 1380
+
 
 async def init_db() -> None:
     """Create the connection pool, ensure tables exist, run light migrations."""
@@ -73,14 +77,25 @@ async def init_db() -> None:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
 
-            -- bookable time window per weekday (0 = Monday ... 6 = Sunday),
-            -- stored as minutes from midnight; close_min may be <= open_min
-            -- for windows that cross midnight (e.g. 12:00-00:00).
+            -- LEGACY: a single window per weekday. Superseded by booking_windows;
+            -- kept so existing deployments can be migrated (and rolled back).
             CREATE TABLE IF NOT EXISTS booking_hours (
                 weekday   SMALLINT PRIMARY KEY,
                 is_open   BOOLEAN  NOT NULL DEFAULT TRUE,
                 open_min  SMALLINT NOT NULL DEFAULT 720,
                 close_min SMALLINT NOT NULL DEFAULT 1380
+            );
+
+            -- bookable time windows per weekday (0 = Monday ... 6 = Sunday),
+            -- stored as minutes from midnight. A weekday may have several rows
+            -- (e.g. 16:00-17:00 and 19:00-20:00); no rows at all = day off.
+            -- close_min may be <= open_min for a window crossing midnight.
+            CREATE TABLE IF NOT EXISTS booking_windows (
+                id        SERIAL   PRIMARY KEY,
+                weekday   SMALLINT NOT NULL,
+                open_min  SMALLINT NOT NULL,
+                close_min SMALLINT NOT NULL,
+                UNIQUE (weekday, open_min, close_min)
             );
             """
         )
@@ -97,6 +112,9 @@ async def init_db() -> None:
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_bookings_created ON bookings (created_at);"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_booking_windows_weekday ON booking_windows (weekday);"
         )
 
         # --- seed a starter FAQ once (keeps parity with the old hardcoded list) ---
@@ -126,15 +144,42 @@ async def init_db() -> None:
                 ],
             )
 
-        # --- seed the weekly booking window once (12:00-23:00 every day) ---
-        hours_count = await conn.fetchval("SELECT COUNT(*) FROM booking_hours")
-        if hours_count == 0:
-            await conn.executemany(
+        # --- one-time move from booking_hours (one window/day) to booking_windows ---
+        migrated = await conn.fetchval(
+            "SELECT value FROM settings WHERE key = 'booking_windows_migrated'"
+        )
+        if migrated != "1":
+            legacy = await conn.fetch(
+                "SELECT weekday, open_min, close_min FROM booking_hours WHERE is_open"
+            )
+            if legacy:
+                await conn.executemany(
+                    """
+                    INSERT INTO booking_windows (weekday, open_min, close_min)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (weekday, open_min, close_min) DO NOTHING;
+                    """,
+                    [(r["weekday"], r["open_min"], r["close_min"]) for r in legacy],
+                )
+            else:
+                # nothing to migrate: fresh install (no legacy rows at all) gets
+                # the default window; a deployment where every day was marked as
+                # a day off keeps its days off.
+                had_legacy = await conn.fetchval("SELECT COUNT(*) FROM booking_hours")
+                if not had_legacy:
+                    await conn.executemany(
+                        """
+                        INSERT INTO booking_windows (weekday, open_min, close_min)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (weekday, open_min, close_min) DO NOTHING;
+                        """,
+                        [(d, _DEFAULT_OPEN_MIN, _DEFAULT_CLOSE_MIN) for d in range(7)],
+                    )
+            await conn.execute(
                 """
-                INSERT INTO booking_hours (weekday, is_open, open_min, close_min)
-                VALUES ($1, TRUE, 720, 1380);
-                """,
-                [(d,) for d in range(7)],
+                INSERT INTO settings (key, value) VALUES ('booking_windows_migrated', '1')
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+                """
             )
 
 
@@ -354,34 +399,73 @@ async def purge_past_blocked_dates() -> None:
         await conn.execute("DELETE FROM blocked_dates WHERE day < CURRENT_DATE")
 
 
-# --- booking hours (per weekday, minutes from midnight) ---
-async def list_booking_hours() -> list[asyncpg.Record]:
+# --- booking windows (several per weekday, minutes from midnight) ---
+async def list_booking_windows() -> list[asyncpg.Record]:
+    """Every window, ordered by weekday then start time."""
     async with _pool.acquire() as conn:
-        return await conn.fetch("SELECT * FROM booking_hours ORDER BY weekday ASC")
+        return await conn.fetch(
+            "SELECT * FROM booking_windows ORDER BY weekday ASC, open_min ASC"
+        )
 
 
-async def get_booking_hours(weekday: int) -> asyncpg.Record | None:
+async def list_day_windows(weekday: int) -> list[asyncpg.Record]:
+    """Windows for one weekday, ordered by start time. Empty list = day off."""
+    async with _pool.acquire() as conn:
+        return await conn.fetch(
+            "SELECT * FROM booking_windows WHERE weekday = $1 ORDER BY open_min ASC",
+            weekday,
+        )
+
+
+async def get_booking_window(window_id: int) -> asyncpg.Record | None:
     async with _pool.acquire() as conn:
         return await conn.fetchrow(
-            "SELECT * FROM booking_hours WHERE weekday = $1", weekday
+            "SELECT * FROM booking_windows WHERE id = $1", window_id
         )
 
 
-async def set_booking_hours(
-    weekday: int, is_open: bool, open_min: int, close_min: int
-) -> None:
+async def add_booking_window(weekday: int, open_min: int, close_min: int) -> int | None:
+    """Add a window. Returns None when an identical window already exists."""
     async with _pool.acquire() as conn:
-        await conn.execute(
+        return await conn.fetchval(
             """
-            INSERT INTO booking_hours (weekday, is_open, open_min, close_min)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (weekday) DO UPDATE
-              SET is_open   = EXCLUDED.is_open,
-                  open_min  = EXCLUDED.open_min,
-                  close_min = EXCLUDED.close_min;
+            INSERT INTO booking_windows (weekday, open_min, close_min)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (weekday, open_min, close_min) DO NOTHING
+            RETURNING id;
             """,
-            weekday, is_open, open_min, close_min,
+            weekday, open_min, close_min,
         )
+
+
+async def delete_booking_window(window_id: int) -> bool:
+    async with _pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM booking_windows WHERE id = $1", window_id
+        )
+        return result.endswith("1")
+
+
+async def clear_day_windows(weekday: int) -> None:
+    """Remove every window of a weekday — i.e. make it a day off."""
+    async with _pool.acquire() as conn:
+        await conn.execute("DELETE FROM booking_windows WHERE weekday = $1", weekday)
+
+
+async def replace_day_windows(weekday: int, windows: list[tuple[int, int]]) -> None:
+    """Atomically swap all windows of a weekday for a new set."""
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM booking_windows WHERE weekday = $1", weekday)
+            if windows:
+                await conn.executemany(
+                    """
+                    INSERT INTO booking_windows (weekday, open_min, close_min)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (weekday, open_min, close_min) DO NOTHING;
+                    """,
+                    [(weekday, o, c) for o, c in windows],
+                )
 
 
 # --- settings (key/value: menu file_id, editable contacts, toggles, ...) ---
