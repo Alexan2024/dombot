@@ -29,6 +29,9 @@ WEEKDAYS_RU_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 
 SLOT_STEP_MINUTES = 30
 
+# a booking window is a (open_min, close_min) pair, minutes from midnight
+Window = tuple[int, int]
+
 
 async def get_lang(tg_id: int) -> str:
     """Resolve a user's language, defaulting to Russian."""
@@ -162,42 +165,71 @@ def _normalized_window(open_min: int, close_min: int) -> tuple[int, int]:
     return open_min, close_min if close_min > open_min else close_min + 1440
 
 
+def sort_windows(windows: list[Window]) -> list[Window]:
+    return sorted(windows, key=lambda w: (w[0], _normalized_window(*w)[1]))
+
+
 def time_in_window(minutes: int, open_min: int, close_min: int) -> bool:
     start, end = _normalized_window(open_min, close_min)
     value = minutes if minutes >= start else minutes + 1440
     return start <= value <= end
 
 
+def time_in_windows(minutes: int, windows: list[Window]) -> bool:
+    """Whether a time falls inside any of the day's windows."""
+    return any(time_in_window(minutes, open_min, close_min)
+               for open_min, close_min in windows)
+
+
 def time_slots(open_min: int, close_min: int, step: int = SLOT_STEP_MINUTES) -> list[str]:
-    """Bookable times inside the window, as HH:MM labels."""
+    """Bookable times inside one window, as HH:MM labels."""
     start, end = _normalized_window(open_min, close_min)
     return [fmt_time(m) for m in range(start, end + 1, step)]
+
+
+def windows_slots(windows: list[Window], step: int = SLOT_STEP_MINUTES) -> list[str]:
+    """Bookable times across every window of the day, in order, deduplicated
+    (windows may overlap, e.g. 16:00-18:00 and 17:00-20:00)."""
+    seen: set[str] = set()
+    slots: list[str] = []
+    for open_min, close_min in sort_windows(windows):
+        for slot in time_slots(open_min, close_min, step):
+            if slot not in seen:
+                seen.add(slot)
+                slots.append(slot)
+    return slots
 
 
 def window_label(open_min: int, close_min: int) -> str:
     return f"{fmt_time(open_min)}–{fmt_time(close_min)}"
 
 
+def windows_label(windows: list[Window], separator: str = ", ") -> str:
+    """'16:00–17:00, 19:00–20:00'. Empty string when there are no windows."""
+    return separator.join(
+        window_label(open_min, close_min)
+        for open_min, close_min in sort_windows(windows)
+    )
+
+
 # ---------- availability ----------
-async def day_window(day: date) -> tuple[int, int] | None:
-    """Bookable window for a given day, or None if the weekday is a day off."""
-    hours = await db.get_booking_hours(day.weekday())
-    if not hours or not hours["is_open"]:
-        return None
-    return hours["open_min"], hours["close_min"]
+async def day_windows(day: date) -> list[Window]:
+    """Bookable windows for a given day. Empty list means the day is off."""
+    rows = await db.list_day_windows(day.weekday())
+    return [(int(r["open_min"]), int(r["close_min"])) for r in rows]
 
 
 async def check_date(day: date, lang: str) -> tuple[bool, str | None]:
     """(available, custom_message).
 
     A day is unavailable when it is explicitly blocked or falls on a weekday
-    marked as a day off. `custom_message` is the per-date text an admin wrote,
-    when there is one; otherwise the caller uses the general message.
+    with no bookable windows. `custom_message` is the per-date text an admin
+    wrote, when there is one; otherwise the caller uses the general message.
     """
     blocked = await db.get_blocked_date(day)
     if blocked:
         custom = blocked["message_ru"] if lang == "ru" else blocked["message_en"]
         return False, (custom or None)
-    if await day_window(day) is None:
+    if not await day_windows(day):
         return False, None
     return True, None
