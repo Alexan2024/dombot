@@ -12,8 +12,8 @@
 - Toggle:  booking intake on/off (settings key 'bookings_enabled').
 - Dates:   close booking for a specific day (`blocked_dates`), with an optional
            per-date message; otherwise the general "date closed" text is used.
-- Hours:   bookable time window per weekday (`booking_hours`, minutes from
-           midnight). A day can also be marked as a day off.
+- Hours:   one or more bookable windows per weekday (`booking_windows`, minutes
+           from midnight). A weekday with no windows at all is a day off.
 - Texts:   every guest-facing "unavailable" message is editable per language
            (settings keys msg_{name}_{lang}, fallbacks in texts.py).
 
@@ -51,6 +51,7 @@ from handlers.common import (
     parse_date,
     parse_time,
     window_label,
+    windows_label,
 )
 
 router = Router()
@@ -142,8 +143,10 @@ _MSG_INTRO = {
     ),
     "time_closed": (
         "Гость видит этот текст, когда указывает время вне доступных часов.\n"
-        "Можно использовать <code>{from}</code> и <code>{to}</code> — подставятся "
-        "часы бронирования на выбранный день."
+        "Можно использовать <code>{hours}</code> — подставятся все доступные "
+        "промежутки выбранного дня (например, «16:00–17:00, 19:00–20:00»).\n"
+        "<code>{from}</code> и <code>{to}</code> тоже работают — это начало "
+        "первого и конец последнего промежутка."
     ),
 }
 _MSG_BACK = {
@@ -378,12 +381,13 @@ async def admdate_del(callback: CallbackQuery) -> None:
     await callback.message.answer(text, reply_markup=kb)
 
 
-# ---------- booking hours (per weekday) ----------
-class EditHours(StatesGroup):
+# ---------- booking hours (several windows per weekday) ----------
+class AddHours(StatesGroup):
     waiting_value = State()
 
 
 _DAY_OFF_WORDS = ("выходной", "закрыто", "закрыт", "нет", "off", "closed")
+_WINDOW_SEPARATORS = (",", ";", "\n")
 
 
 def _parse_window(text: str):
@@ -401,26 +405,58 @@ def _parse_window(text: str):
     return start, end
 
 
+def _parse_windows(text: str):
+    """Parse one or several windows: '16:00-17:00, 19:00-20:00'.
+
+    Returns (windows, bad_chunk). `bad_chunk` is the first unparseable piece,
+    in which case `windows` is empty.
+    """
+    raw = text
+    for sep in _WINDOW_SEPARATORS:
+        raw = raw.replace(sep, "|")
+    windows = []
+    for chunk in (c.strip() for c in raw.split("|")):
+        if not chunk:
+            continue
+        window = _parse_window(chunk)
+        if window is None:
+            return [], chunk
+        windows.append(window)
+    return windows, None
+
+
+def _short(text: str, limit: int = 34) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+async def _day_windows(weekday: int) -> list[tuple[int, int]]:
+    rows = await db.list_day_windows(weekday)
+    return [(int(r["open_min"]), int(r["close_min"])) for r in rows]
+
+
 async def _hours_view():
-    rows_db = await db.list_booking_hours()
-    by_day = {r["weekday"]: r for r in rows_db}
+    rows_db = await db.list_booking_windows()
+    by_day: dict[int, list[tuple[int, int]]] = {}
+    for row in rows_db:
+        by_day.setdefault(int(row["weekday"]), []).append(
+            (int(row["open_min"]), int(row["close_min"]))
+        )
+
     lines = [
         "🕐 <b>Часы бронирования</b>",
         "",
         "В эти часы гость может забронировать стол. "
-        "Нажмите на день, чтобы изменить.",
+        "В одном дне можно задать несколько промежутков — например, "
+        "16:00–17:00 и 19:00–20:00.",
         "",
     ]
     rows = []
     for day in range(7):
-        row = by_day.get(day)
-        if not row or not row["is_open"]:
-            label = "выходной"
-        else:
-            label = window_label(row["open_min"], row["close_min"])
+        windows = by_day.get(day, [])
+        label = windows_label(windows) if windows else "выходной"
         lines.append(f"<b>{WEEKDAYS_RU[day]}:</b> {label}")
         rows.append([InlineKeyboardButton(
-            text=f"✏️ {WEEKDAYS_RU[day]} · {label}",
+            text=_short(f"✏️ {WEEKDAYS_RU[day]} · {label}"),
             callback_data=f"admhours:day:{day}",
         )])
     rows.append([InlineKeyboardButton(
@@ -430,11 +466,42 @@ async def _hours_view():
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+async def _day_view(weekday: int):
+    """One weekday: its windows, with a delete button per window."""
+    rows_db = await db.list_day_windows(weekday)
+    lines = [f"🕐 <b>{WEEKDAYS_RU[weekday]}</b>", ""]
+    rows = []
+    if rows_db:
+        lines.append("Доступные промежутки:")
+        for row in rows_db:
+            label = window_label(int(row["open_min"]), int(row["close_min"]))
+            lines.append(f"• {label}")
+            rows.append([InlineKeyboardButton(
+                text=f"🗑 {label}", callback_data=f"admhours:del:{row['id']}"
+            )])
+    else:
+        lines.append("Сейчас это <b>выходной</b> — брони не принимаются.")
+    lines.append("")
+    lines.append("<i>Промежутков может быть сколько угодно. Гость получит "
+                 "кнопки со временем из всех промежутков.</i>")
+
+    rows.append([InlineKeyboardButton(
+        text="➕ Добавить промежуток", callback_data=f"admhours:add:{weekday}"
+    )])
+    if rows_db:
+        rows.append([InlineKeyboardButton(
+            text="🚫 Сделать выходным", callback_data=f"admhours:off:{weekday}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ К дням недели", callback_data="adm:hours")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.callback_query(F.data == "adm:hours")
-async def adm_hours(callback: CallbackQuery) -> None:
+async def adm_hours(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer()
         return
+    await state.clear()
     text, kb = await _hours_view()
     await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
@@ -449,64 +516,124 @@ async def admhours_day(callback: CallbackQuery, state: FSMContext) -> None:
     if day not in range(7):
         await callback.answer()
         return
-    row = await db.get_booking_hours(day)
-    current = (
-        window_label(row["open_min"], row["close_min"])
-        if row and row["is_open"] else "выходной"
-    )
-    await state.set_state(EditHours.waiting_value)
+    await state.clear()
+    text, kb = await _day_view(day)
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admhours:add:"))
+async def admhours_add(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    day = int(callback.data.split(":")[2])
+    if day not in range(7):
+        await callback.answer()
+        return
+    current = await _day_windows(day)
+    now_label = windows_label(current) if current else "выходной"
+    await state.set_state(AddHours.waiting_value)
     await state.update_data(hours_day=day)
     await callback.message.answer(
-        f"<b>{WEEKDAYS_RU[day]}</b> — сейчас: {current}\n\n"
-        "Пришлите новое окно в формате <code>12:00-23:00</code>.\n"
-        "Окно через полночь тоже работает: <code>12:00-01:00</code>.\n"
-        "Чтобы сделать день выходным, отправьте <b>выходной</b>.\n\n"
+        f"<b>{WEEKDAYS_RU[day]}</b> — сейчас: {now_label}\n\n"
+        "Пришлите промежуток в формате <code>19:00-20:00</code>.\n"
+        "Можно сразу несколько через запятую: "
+        "<code>16:00-17:00, 19:00-20:00</code>.\n"
+        "Промежуток через полночь тоже работает: <code>22:00-01:00</code>.\n\n"
+        "Слово <b>выходной</b> уберёт все промежутки этого дня.\n"
         "Для отмены — /cancel."
     )
     await callback.answer()
 
 
-@router.message(EditHours.waiting_value, Command("cancel"))
+@router.callback_query(F.data.startswith("admhours:del:"))
+async def admhours_del(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    window_id = int(callback.data.split(":")[2])
+    row = await db.get_booking_window(window_id)
+    if not row:
+        await callback.answer("Промежуток не найден", show_alert=True)
+        return
+    day = int(row["weekday"])
+    await db.delete_booking_window(window_id)
+    await callback.answer("Промежуток удалён")
+    text, kb = await _day_view(day)
+    await callback.message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("admhours:off:"))
+async def admhours_off(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    day = int(callback.data.split(":")[2])
+    if day not in range(7):
+        await callback.answer()
+        return
+    await state.clear()
+    await db.clear_day_windows(day)
+    await callback.answer(f"{WEEKDAYS_RU[day]} — выходной")
+    text, kb = await _day_view(day)
+    await callback.message.answer(text, reply_markup=kb)
+
+
+@router.message(AddHours.waiting_value, Command("cancel"))
 async def admhours_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Отменено. Часы не изменились.")
 
 
-@router.message(EditHours.waiting_value, F.text)
+@router.message(AddHours.waiting_value, F.text)
 async def admhours_save(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     day = data.get("hours_day")
     if day not in range(7):
         await state.clear()
         return
-    raw = message.text.strip().lower()
 
+    raw = message.text.strip().lower()
     if raw in _DAY_OFF_WORDS:
-        row = await db.get_booking_hours(day)
-        await db.set_booking_hours(
-            day, False,
-            row["open_min"] if row else 720,
-            row["close_min"] if row else 1380,
-        )
+        await db.clear_day_windows(day)
         await state.clear()
         await message.answer(f"✅ {WEEKDAYS_RU[day]} — выходной, брони не принимаются.")
-        text, kb = await _hours_view()
+        text, kb = await _day_view(day)
         await message.answer(text, reply_markup=kb)
         return
 
-    window = _parse_window(message.text)
-    if not window:
+    windows, bad = _parse_windows(message.text)
+    if bad is not None or not windows:
+        hint = f"Не понял «{esc(bad)}». " if bad else "Не понял. "
         await message.answer(
-            "Не понял. Пример: <code>12:00-23:00</code> или слово <b>выходной</b>."
+            hint
+            + "Пример: <code>19:00-20:00</code> или "
+              "<code>16:00-17:00, 19:00-20:00</code>.\n"
+              "Слово <b>выходной</b> уберёт все промежутки дня."
         )
         return
-    open_min, close_min = window
-    await db.set_booking_hours(day, True, open_min, close_min)
+
+    added, skipped = 0, 0
+    for open_min, close_min in windows:
+        window_id = await db.add_booking_window(day, open_min, close_min)
+        if window_id is None:
+            skipped += 1
+        else:
+            added += 1
+
     await state.clear()
+    parts = []
+    if added:
+        parts.append(f"добавлено: {added}")
+    if skipped:
+        parts.append(f"уже были: {skipped}")
+    current = await _day_windows(day)
     await message.answer(
-        f"✅ {WEEKDAYS_RU[day]}: {fmt_time(open_min)}–{fmt_time(close_min)}."
+        f"✅ {WEEKDAYS_RU[day]} — {', '.join(parts)}.\n"
+        f"Итого: {windows_label(current) if current else 'выходной'}."
     )
-    text, kb = await _hours_view()
+    text, kb = await _day_view(day)
     await message.answer(text, reply_markup=kb)
 
 
