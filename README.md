@@ -58,17 +58,36 @@ All of this lives under `/admin`:
 - **📅 Закрытые даты** — switch booking off for a specific day. Optionally give
   that date its own RU/EN message; otherwise guests see the general
   "date closed" text, which is editable in the same section.
-- **🕐 Часы бронирования** — a bookable window per weekday
-  (`12:00-23:00`, or `12:00-01:00` for a window crossing midnight), or mark the
-  day as **выходной**. Guests get time-slot buttons built from that window and
-  can still type a time; anything outside the window is rejected with an
-  editable message.
+- **🕐 Часы бронирования** — pick a weekday, then manage its **bookable windows**.
+  A weekday can have **several windows** (e.g. `16:00-17:00` and `19:00-20:00`);
+  a weekday with no windows at all is a day off. Windows crossing midnight work
+  too (`22:00-01:00`). Guests get time-slot buttons built from every window of
+  the day and can still type a time; anything outside the windows is rejected
+  with an editable message.
+  - **➕ Добавить промежуток** accepts one window (`19:00-20:00`) or several at
+    once, comma-separated (`16:00-17:00, 19:00-20:00`).
+  - The word **выходной** clears every window of that weekday.
+  - **🗑** next to a window removes just that window.
 - **🔕 Приём броней** — the global kill switch, unchanged.
 
 Defaults on first start: 12:00–23:00 every day. Check the panel right after
 deploying and adjust.
 
-## 5. Managing events
+> **Upgrading an existing deployment:** the old one-window-per-weekday table
+> (`booking_hours`) is migrated into `booking_windows` automatically on the
+> first start, and days that were marked as days off stay days off. The
+> migration runs once (guarded by the `booking_windows_migrated` setting), so
+> later edits in the panel are never overwritten. `booking_hours` is left in
+> place untouched as a rollback safety net.
+
+## 5. Large parties
+
+Requests for **6 guests or more** reach the managers' chat with a highlighted
+header (❗ БОЛЬШАЯ КОМПАНИЯ) and a reminder that a deposit and the 10% service
+charge apply. Guests see nothing extra — the flag is manager-facing only. The
+threshold is `LARGE_PARTY_THRESHOLD` in `handlers/booking.py`.
+
+## 6. Managing events
 
 In the managers' chat (or private chat with the bot), an admin sends:
 
@@ -77,12 +96,20 @@ In the managers' chat (or private chat with the bot), an admin sends:
 
 Guests see them under the **🎭 Афиша / Events** button.
 
-## 6. Filling in content
+## 7. Filling in content
 
-- Restaurant address / hours / phone / map / menu link → Railway **Variables**
-  (or edit defaults in `config.py`).
-- FAQ answers → edit the `faq_a_*` strings in `texts.py` (currently placeholders).
-- Wording of any message → `texts.py` (all RU/EN strings live there).
+- Restaurant address / hours / phone / map → `/admin` → **📍 Контакты и часы**
+  (or Railway **Variables** / `config.py` defaults as a fallback).
+- FAQ → `/admin` → **❓ FAQ**, stored in the database, bilingual.
+- Wording of any message → `texts.py` (all RU/EN strings live there). The
+  "unavailable" messages are additionally editable from the panel.
+
+Placeholders available in the editable texts:
+
+| Message | Placeholders |
+| --- | --- |
+| `date_closed` | `{date}` |
+| `time_closed` | `{hours}` — all windows of the day; `{from}` / `{to}` — start of the first and end of the last window |
 
 ## Project layout
 
@@ -90,12 +117,15 @@ Guests see them under the **🎭 Афиша / Events** button.
 bot.py              entry point (polling)
 config.py           reads environment variables
 texts.py            all RU/EN strings and button labels
-database.py         PostgreSQL access (users, bookings, events)
+database.py         PostgreSQL access (users, bookings, events, windows)
 keyboards.py        inline / reply keyboards
 handlers/
   start.py          /start, language, main menu, menu, hours
   booking.py        booking conversation + confirmation
   manager.py        confirm / reschedule / decline + client's reply
+  admin.py          /admin panel: events, FAQ, menu, contacts, hours, texts
+  broadcast.py      broadcast FSM
+  stats.py          statistics panel
   events.py         events view + admin add/list/delete
   info.py           FAQ + fallback
   common.py         shared helpers
