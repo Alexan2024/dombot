@@ -32,10 +32,11 @@ T = {
         ),
         "btn_today": "Сегодня",
         "btn_tomorrow": "Завтра",
+        # {hours} — все доступные промежутки выбранного дня
         "ask_time": (
             "На какое время?\n\n"
             "Выберите время из списка ниже или напишите своё в формате ЧЧ:ММ.\n"
-            "Мы принимаем брони с {from} до {to}."
+            "Мы принимаем брони: {hours}."
         ),
         # --- date / time validation ---
         "date_bad": (
@@ -54,7 +55,7 @@ T = {
         ),
         "time_closed": (
             "К сожалению, на это время бронь недоступна. "
-            "Мы принимаем брони с {from} до {to} — пожалуйста, выберите другое время."
+            "Мы принимаем брони: {hours} — пожалуйста, выберите другое время."
         ),
         "ask_guests": "Сколько будет гостей?",
         "btn_guests_more": "Больше 8",
@@ -180,10 +181,11 @@ T = {
         ),
         "btn_today": "Today",
         "btn_tomorrow": "Tomorrow",
+        # {hours} — every bookable window of the chosen day
         "ask_time": (
             "What time?\n\n"
             "Pick a time below or type your own as HH:MM.\n"
-            "We take bookings from {from} to {to}."
+            "We take bookings: {hours}."
         ),
         "date_bad": (
             "I couldn't read that date. Please type it as DD.MM.YYYY — "
@@ -200,7 +202,7 @@ T = {
         ),
         "time_closed": (
             "Unfortunately that time isn't available. "
-            "We take bookings from {from} to {to} — please pick another time."
+            "We take bookings: {hours} — please pick another time."
         ),
         "ask_guests": "How many guests?",
         "btn_guests_more": "More than 8",
