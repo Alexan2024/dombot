@@ -1,4 +1,5 @@
 """Booking conversation (FSM). Collects details and forwards a request to managers."""
+import re
 from datetime import date, timedelta
 
 from aiogram import F, Router
@@ -15,7 +16,7 @@ import config
 import database as db
 from handlers.common import (
     check_date,
-    day_window,
+    day_windows,
     esc,
     fill,
     fmt_date,
@@ -26,8 +27,10 @@ from handlers.common import (
     is_bookings_enabled,
     parse_date,
     parse_time,
-    time_in_window,
-    time_slots,
+    sort_windows,
+    time_in_windows,
+    windows_label,
+    windows_slots,
 )
 from keyboards import (
     confirm_kb,
@@ -42,6 +45,9 @@ from keyboards import (
 from texts import T, t
 
 router = Router()
+
+# Parties of this size or larger are flagged for the managers (deposit + service).
+LARGE_PARTY_THRESHOLD = 6
 
 
 class Booking(StatesGroup):
@@ -64,6 +70,25 @@ def _cancel_kb(lang: str) -> ReplyKeyboardMarkup:
         keyboard=[[KeyboardButton(text=t(lang, "btn_cancel"))]],
         resize_keyboard=True,
     )
+
+
+def guests_count(text: str) -> int | None:
+    """Best-effort numeric guest count from a stored value ('6', '6 человек').
+    Returns None when nothing numeric was typed."""
+    match = re.search(r"\d+", text or "")
+    return int(match.group()) if match else None
+
+
+def _state_windows(data: dict) -> list[tuple[int, int]]:
+    """Windows kept in the FSM. Falls back to the single open/close pair stored
+    by older versions of the bot, so a leftover FSM keeps working."""
+    raw = data.get("windows")
+    if raw:
+        return [(int(open_min), int(close_min)) for open_min, close_min in raw]
+    open_min, close_min = data.get("open_min"), data.get("close_min")
+    if open_min is not None and close_min is not None:
+        return [(int(open_min), int(close_min))]
+    return []
 
 
 async def _begin(message: Message, state: FSMContext, lang: str) -> None:
@@ -130,12 +155,15 @@ async def cancel_booking(message: Message, state: FSMContext) -> None:
 
 # --- step 1: date ---
 async def _ask_time(message: Message, state: FSMContext, lang: str,
-                    open_min: int, close_min: int) -> None:
+                    windows: list[tuple[int, int]]) -> None:
     """Move on to the time step, offering the slots allowed on the chosen day."""
-    slots = time_slots(open_min, close_min)
+    windows = sort_windows(windows)
+    slots = windows_slots(windows)
     prompt = fill(
         t(lang, "ask_time"),
-        **{"from": fmt_time(open_min), "to": fmt_time(close_min)},
+        hours=windows_label(windows),
+        # kept so an older admin-edited text using {from}/{to} still renders
+        **{"from": fmt_time(windows[0][0]), "to": fmt_time(windows[-1][1])},
     )
     await state.set_state(Booking.time)
     await message.answer(prompt, reply_markup=time_kb(lang, slots))
@@ -168,22 +196,21 @@ async def step_date(message: Message, state: FSMContext) -> None:
         )
         return
 
-    window = await day_window(chosen)
-    if window is None:  # defensive: check_date already covers this
+    windows = await day_windows(chosen)
+    if not windows:  # defensive: check_date already covers this
         await message.answer(
             fill(await get_message("date_closed", lang), date=fmt_date(chosen)),
             reply_markup=date_kb(lang),
         )
         return
 
-    open_min, close_min = window
+    windows = sort_windows(windows)
     await state.update_data(
         date=fmt_date(chosen),
         date_iso=chosen.isoformat(),
-        open_min=open_min,
-        close_min=close_min,
+        windows=[[open_min, close_min] for open_min, close_min in windows],
     )
-    await _ask_time(message, state, lang, open_min, close_min)
+    await _ask_time(message, state, lang, windows)
 
 
 # --- step 2: time ---
@@ -191,32 +218,30 @@ async def step_date(message: Message, state: FSMContext) -> None:
 async def step_time(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     lang = data.get("lang", "ru")
-    open_min = data.get("open_min")
-    close_min = data.get("close_min")
+    windows = _state_windows(data)
 
-    # no window in state (e.g. an FSM left over from an older version) —
+    # no windows in state (e.g. an FSM left over from an older version) —
     # accept the value as typed rather than dead-ending the guest
-    if open_min is None or close_min is None:
+    if not windows:
         await state.update_data(time=message.text.strip())
         await state.set_state(Booking.guests)
         await message.answer(t(lang, "ask_guests"), reply_markup=guests_kb(lang))
         return
 
+    slots = windows_slots(windows)
     minutes = parse_time(message.text)
     if minutes is None:
-        await message.answer(
-            t(lang, "time_bad"),
-            reply_markup=time_kb(lang, time_slots(open_min, close_min)),
-        )
+        await message.answer(t(lang, "time_bad"), reply_markup=time_kb(lang, slots))
         return
 
-    if not time_in_window(minutes, open_min, close_min):
+    if not time_in_windows(minutes, windows):
         await message.answer(
             fill(
                 await get_message("time_closed", lang),
-                **{"from": fmt_time(open_min), "to": fmt_time(close_min)},
+                hours=windows_label(windows),
+                **{"from": fmt_time(windows[0][0]), "to": fmt_time(windows[-1][1])},
             ),
-            reply_markup=time_kb(lang, time_slots(open_min, close_min)),
+            reply_markup=time_kb(lang, slots),
         )
         return
 
@@ -299,6 +324,38 @@ async def step_requests(message: Message, state: FSMContext) -> None:
 
 
 # --- step 7: confirm actions ---
+def _manager_card(booking_id: int, data: dict, user) -> str:
+    """The request as managers see it. Large parties get a loud header so they
+    can't be missed in a busy group chat."""
+    count = guests_count(data["guests"])
+    is_large = count is not None and count >= LARGE_PARTY_THRESHOLD
+
+    lang_human = "🇷🇺 русский" if data.get("lang", "ru") == "ru" else "🇬🇧 английский"
+    requests_line = esc(data.get("requests")) if data.get("requests") else "—"
+    username = f"@{user.username}" if user.username else "—"
+
+    if is_large:
+        head = (
+            f"❗️❗️❗️ <b>БОЛЬШАЯ КОМПАНИЯ — заявка №{booking_id}</b>\n"
+            f"❗️ Гостей: <b>{count}</b> — нужен депозит и сервис 10%\n"
+            "➖➖➖➖➖➖➖➖➖➖\n"
+        )
+        guests_line = f"👥 <b>{esc(data['guests'])}</b> ❗️"
+    else:
+        head = f"🆕 <b>Новая заявка №{booking_id}</b>\n"
+        guests_line = f"👥 {esc(data['guests'])}"
+
+    return (
+        f"{head}"
+        f"📅 {esc(data['date'])} · 🕐 {esc(data['time'])} · {guests_line}\n"
+        f"👤 {esc(data['name'])}\n"
+        f"📱 {esc(data.get('phone', '—'))}\n"
+        f"💬 {requests_line}\n"
+        f"🌐 Клиент пишет: {lang_human}\n"
+        f"👥 TG: {username}"
+    )
+
+
 @router.callback_query(Booking.confirm, F.data == "book:send")
 async def confirm_send(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
@@ -316,20 +373,10 @@ async def confirm_send(callback: CallbackQuery, state: FSMContext) -> None:
         requests=data.get("requests") or None,
     )
 
-    lang_human = "🇷🇺 русский" if lang == "ru" else "🇬🇧 английский"
-    requests_line = esc(data.get("requests")) if data.get("requests") else "—"
-    username = f"@{user.username}" if user.username else "—"
-    admin_text = (
-        f"🆕 <b>Новая заявка №{booking_id}</b>\n"
-        f"📅 {esc(data['date'])} · 🕐 {esc(data['time'])} · 👥 {esc(data['guests'])}\n"
-        f"👤 {esc(data['name'])}\n"
-        f"📱 {esc(data.get('phone', '—'))}\n"
-        f"💬 {requests_line}\n"
-        f"🌐 Клиент пишет: {lang_human}\n"
-        f"👥 TG: {username}"
-    )
     await callback.bot.send_message(
-        config.ADMIN_CHAT_ID, admin_text, reply_markup=manager_kb(booking_id)
+        config.ADMIN_CHAT_ID,
+        _manager_card(booking_id, data, user),
+        reply_markup=manager_kb(booking_id),
     )
 
     await callback.message.edit_reply_markup(reply_markup=None)
